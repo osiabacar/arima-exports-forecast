@@ -1,0 +1,261 @@
+---
+title: "STA137 Final Project"
+author: "Oscar Ivan Abarca Cardoza, 920473490"
+date: "2025-11-26"
+output: html_document
+---
+
+```{r}
+install.packages("dplyr", repos = "https://cloud.r-project.org/")
+install.packages("ggplot2", repos = "https://cloud.r-project.org/")
+install.packages("forecast", repos = "https://cloud.r-project.org/")
+install.packages("tseries", repos = "https://cloud.r-project.org/")
+
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+
+load('Data_File_finalproject.Rdata')
+ls()
+
+finalPro_data
+data <- select(finalPro_data, Country, Code, Year, GDP, Exports, Population)
+data
+```
+```{r}
+# normal graph
+ggplot(data, aes(x=Year, y =Exports)) + 
+  geom_line(color = 'blue') +
+  labs(
+    title = 'Central African Republic: Exports (1960-2017)',
+    x = 'Year',
+    y = 'Exports'
+  ) + 
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", linewidth = 1, fill = NA))
+```
+```{r}
+# ACF and PACF
+
+acf(data$Exports, main = 'ACF of Exports')
+pacf(data$Exports, main = 'PACF of Exports')
+
+# ACF 
+  # not stationary 
+    # slow gradual decay of ACF
+      # start at 1 and takes many lags to get to 0 
+      # has a long tail 
+  # need for differencing 
+    # want constant mean and variance over time 
+    # stabilise variance of time series 
+    # stabilising mean necessary to remove changes in level of time series 
+      # eliminate trend and seasonality 
+    # model cannot learn stable relationship with inconsistent mean 
+
+
+```
+```{r}
+# estimating best lambda 
+
+lambda <- BoxCox.lambda(data$Exports)
+lambda # -0.3650884
+
+data_bc <- data.frame(
+  Year = data$Year,
+  Exports = BoxCox(data$Exports, lambda)
+  )
+ggplot(data_bc, aes(x=Year, y =Exports)) + 
+  geom_line(color = 'blue') +
+  labs(
+    title = 'CAF Exports with Box-Cox (lambda ~ -0.365)',
+    x = 'Year',
+    y = 'Exports Box-Cox Tranformed'
+  ) + 
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", linewidth = 1, fill = NA))
+
+# this isn't necessary
+# acf(BoxCox(data$Exports, lambda), main = 'ACF of Box-Cox Tranformed Exports')
+# pacf(BoxCox(data$Exports, lambda), main = 'PACF of Box-Cox Tranformed Exports')
+
+# Box-Cox eval 
+  # smoother and more linear-looking
+  # variance roughly constant 
+  # log-like transformation compresses high values 
+  # 
+```
+
+
+```{r}
+
+diff_data <- ts(data_bc$Exports, start = min(data_bc$Year), frequency = 1)
+
+diff_data <- diff(diff_data, differences = 1)
+
+plot(diff_data, ylab = 'Difference = 1 After Box-Cox', xlab = 'Year')
+
+  
+
+acf(diff_data, main = 'ACF of Exports (1st difference)')
+pacf(diff_data, main = 'PACF of Exports (1st difference)')
+
+# differencing plot 
+  # The fluctuation around zero suggests that trend has been removed and the mean is constant 
+  # no slow upward/downward movement meaning that one difference is sufficien
+  # acf
+    # Almost drops straight to zero after lag 1, and tiny insignificant lags remain 
+  # pacf
+    # large negative spike at 1 
+    # everything else inside the band 
+  # stationary
+  
+```
+
+```{r}
+# candidate ARIMA models
+
+
+ts_data <- ts(data$Exports, start = min(data$Year), frequency = 1)
+
+mod_ma0 <- Arima(ts_data, order = c(0,1,0), lambda = 'auto', biasadj = TRUE) # Random walk, MA(0)
+mod_ma1 <- Arima(ts_data, order = c(0,1,1), lambda = 'auto', biasadj = TRUE) # ARIMA(0,1,1), MA(1)
+mod_ar1 <- Arima(ts_data, order = c(1,1,0), lambda = 'auto', biasadj = TRUE) # ARIMA(1,1,0), AR(1)
+
+print(mod_ma0)
+print(mod_ma1)
+print(mod_ar1)
+
+arima_eq <- function (model){
+  coefs <- model$coef
+  sigma2 <- model$sigma2 
+  
+  cat("Model Equation:\n")
+  cat("Y_t=")
+  
+  if ("intercept" %in% names(coefs)) {
+    cat(paste0(" ", round(coefs["intercept"], 4)))
+  } else if ("mean" %in% names(coefs)) {
+    cat(paste0(" ", round(coefs["mean"], 4)))
+  } else {
+    cat(" 0")
+  }
+  
+  ar_terms <- grep("^ar", names(coefs))
+  for (i in ar_terms) {
+    cat(paste0(" + ", round(coefs[i], 4), " * Y_{t-", sub("ar", "", names(coefs)[i]), "}"))
+  }
+  
+  ma_terms <- grep("^ma", names(coefs))
+  for (i in ma_terms) {
+    cat(paste0(" + ", round(coefs[i], 4), " * e_{t-", sub("ma", "", names(coefs)[i]), "}"))
+  }
+  
+  cat(paste0(" + e_t,  where  e_t ~ N(0, ", round(sigma2, 4), ")\n\n"))
+}
+
+arima_eq(mod_ma0)
+arima_eq(mod_ma1)
+arima_eq(mod_ar1)
+
+```
+
+```{r}
+res_ma0 <- residuals(mod_ma0)
+res_ma1 <- residuals(mod_ma1)
+res_ar1 <- residuals(mod_ar1)
+
+std_res_ma0 <- res_ma0/ sqrt(mod_ma0$sigma2)
+
+par(mfrow = c(1,3))
+
+plot(std_res_ma0, type = "l", main = "Standardized Residuals for MA(0)",
+     ylab = "Standardized Residuals", xlab = "Time")
+
+acf(res_ma0, main = "ACF of Residuals for MA(0)")
+
+pvals <- sapply(1:20, function(i) Box.test(res_ma0, lag = i, type = "Ljung-Box")$p.value)
+
+plot(1:20, pvals, type = "b", pch = 19,
+     main = "Ljung-Box Test p-values for MA(0)",
+     xlab = "Lag", ylab = "p-value")
+abline(h = 0.05, col = "blue", lty = 2)
+
+
+
+```
+
+```{r}
+std_res_ma1<- res_ma1/ sqrt(mod_ma1$sigma2)
+
+par(mfrow = c(1,3))
+
+plot(std_res_ma1, type = "l", main = "Standardized Residuals for MA(1)",
+     ylab = "Standardized Residuals", xlab = "Time")
+
+acf(res_ma1, main = "ACF of Residuals for MA(1)")
+
+pvals <- sapply(1:20, function(i) Box.test(res_ma1, lag = i, type = "Ljung-Box")$p.value)
+
+plot(1:20, pvals, type = "b", pch = 19,
+     main = "Ljung-Box Test p-values for MA(1)",
+     xlab = "Lag", ylab = "p-value")
+abline(h = 0.05, col = "blue", lty = 2)
+
+```
+
+```{r}
+std_res_ar1 <- res_ar1/ sqrt(mod_ar1$sigma2)
+
+par(mfrow = c(1,3))
+
+plot(std_res_ar1, type = "l", main = "Standardized Residuals for AR(1)",
+     ylab = "Standardized Residuals", xlab = "Time")
+
+acf(res_ar1, main = "ACF of Residuals for AR(1)")
+
+pvals <- sapply(1:20, function(i) Box.test(res_ar1, lag = i, type = "Ljung-Box")$p.value)
+
+plot(1:20, pvals, type = "b", pch = 19,
+     main = "Ljung-Box Test p-values for AR(1)",
+     xlab = "Lag", ylab = "p-value")
+abline(h = 0.05, col = "blue", lty = 2)
+
+
+```
+
+```{r}
+
+fc_data <- forecast(mod_ar1, h = 5)
+autoplot(fc_data) + 
+  labs(
+    title = "Forecast with 80% and 95% Confidence Intervals",
+    x = 'Year',
+    y = 'Export'
+  ) +
+  theme_minimal() + 
+  theme(panel.border = element_rect(colour = "black", linewidth = 1, fill = NA))
+
+
+str(fc_data$level)
+
+forecasted_yrs <- as.integer(time(fc_data$mean))
+
+forecasted_df <- data.frame( 
+  Year = forecasted_yrs,
+  Forecast = as.numeric(fc_data$mean)
+  )
+
+print(forecasted_df)
+
+forecasted_df <- cbind(
+  forecasted_df,
+  Lo_80 = as.numeric(fc_data$lower[,1]),
+  Hi_80 = as.numeric(fc_data$upper[,1]),
+  Lo_95 = as.numeric(fc_data$lower[,2]),
+  Hi_95 = as.numeric(fc_data$upper[,2])
+)
+
+print(forecasted_df)
+```
+
